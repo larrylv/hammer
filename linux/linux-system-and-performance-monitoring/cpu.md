@@ -88,7 +88,13 @@ The application stack of any system is often broken down into two types:
 
 * The following example demonstrates `vmstat` running at 1 second intervals.
 
+![vmstat](https://raw.githubusercontent.com/larrylv/hammer/master/linux/linux-system-and-performance-monitoring/images/vmstat.png)
+
+![vmstat_table](https://raw.githubusercontent.com/larrylv/hammer/master/linux/linux-system-and-performance-monitoring/images/vmstat_table.png)
+
 ## 4.2 Case Study: Sustained CPU Utilization
+
+![vmstat_sustained](https://raw.githubusercontent.com/larrylv/hammer/master/linux/linux-system-and-performance-monitoring/images/vmstat_sustained.png)
 
 * The following observations are made from the output:
   - There are a high amount of interrupts (in) and a low amount of context switches. It appears that a single process is making requests to hardware devices.
@@ -97,12 +103,16 @@ The application stack of any system is often broken down into two types:
 
 ## 4.3 Case Study: Overloaded Scheduler
 
+![vmstat_overloaded](https://raw.githubusercontent.com/larrylv/hammer/master/linux/linux-system-and-performance-monitoring/images/vmstat_overloaded.png)
+
 * The following conclusions can be drawn from the output:
   - The amount of context switches is higher than interrupts, suggesting that the kernel has to spend a considerable amount of time context switching threads.
   - The high volume of context switches is causing an unhealthy balance of CPU utilization. This is evident by the fact that the wait on IO percentage is extremely high and the user percentage is extremely low.
   - Because the CPU is block waiting for I/O, the run queue starts to fill and the amount of threads blocked waiting on I/O also fills.
 
 ## 4.4 Using the `mpstat` Utility
+
+![mpstat](https://raw.githubusercontent.com/larrylv/hammer/master/linux/linux-system-and-performance-monitoring/images/mpstat.png)
 
 * If your system has multiple processor cores, you can use the `mpstat` command to monitor each individual core. The Linux kernel treats a dual core processor as 2 CPU’s. So, a dual processor system with dual cores will report 4 CPUs available.
 
