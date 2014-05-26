@@ -452,7 +452,7 @@ func main() {
 
 ## 2.14 Arrays
 
-* The type `[n] T` is an array of n values of type T. `var a [10]int` declares a variable `a` as an array of ten integers.
+* The type `[n]T` is an array of n values of type T. `var a [10]int` declares a variable `a` as an array of ten integers.
 
 * An array's length is part of its type, so arrays cannot be resized. This seems limiting, but Go provides a convenient way of working with arrays.
 
