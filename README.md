@@ -8,6 +8,8 @@
   - [Chapter 3: Methods and interfaces](https://github.com/larrylv/hammer/blob/master/go/bootcamp/chap3-methods-and-interfaces.md)
   - [Chapter 4: Concurrency](https://github.com/larrylv/hammer/blob/master/go/bootcamp/chap4-concurrency.md)
 
+* [Effective Go](https://github.com/larrylv/hammer/blob/master/go/effective-go/effective-go.md)
+
 ## [Linux](https://github.com/larrylv/hammer/tree/master/linux)
 
 * [Linux System and Performance Monitoring](https://github.com/larrylv/hammer/tree/master/linux/linux-system-and-performance-monitoring)
