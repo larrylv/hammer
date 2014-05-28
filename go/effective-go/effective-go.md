@@ -16,11 +16,11 @@
 
 * The `setter` function, if needed, will likely be called `SetOwner`.
 
-``` go
-owner := obj.Owner()
-if owner != user {
-  obj.SetOwner(user)
-}
+  ``` go
+  owner := obj.Owner()
+  if owner != user {
+    obj.SetOwner(user)
+  }
 ```
 
 ### Interface names
@@ -38,6 +38,7 @@ if owner != user {
 ### If
 
 * Since `if` and `switch` accept an initialization statement, it's common to see one used to set up a local variable.
+
   ``` go
   if err := file.Chmod(0644); err != nil {
     log.Print(err)
