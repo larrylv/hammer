@@ -805,3 +805,385 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
 * Embedding types introduces the problem of name conflicts but the rules to resolve them are simple. First, a field or method X hides any other item X in a more deeply nested part of the type. If log.Logger contained a field or method called Command, the Command field of Job would dominate it.
 
 * Second, if the same name appears at the same nesting level, it is usually an error; it would be erroneous to embed log.Logger if the Job struct contained another field or method called Logger. However, if the duplicate name is never mentioned in the program outside the type definition, it is OK. This qualification provides some protection against changes made to types embedded from outside; there is no problem if a field is added that conflicts with another field in another subtype if neither field is ever used.
+
+## Concurrency
+
+### Share by communicating
+
+* One way to think about this model is to consider a typical single-threaded program running on one CPU. It has no need for synchronization primitives. Now run another such instance; it too needs no synchronization. Now let those two communicate; if the communication is the synchronizer, there's still no need for other synchronization. Unix pipelines, for example, fit this model perfectly. Although Go's approach to concurrency originates in Hoare's Communicating Sequential Processes (CSP), it can also be seen as a type-safe generalization of Unix pipes.
+
+### Goroutines
+
+* They're called goroutines because the existing terms—threads, coroutines, processes, and so on—convey inaccurate connotations. A goroutine has a simple model: it is a function executing concurrently with other goroutines in the same address space. It is lightweight, costing little more than the allocation of stack space. And the stacks start small, so they are cheap, and grow by allocating (and freeing) heap storage as required.
+
+* Goroutines are multiplexed onto multiple OS threads so if one should block, such as while waiting for I/O, others continue to run. Their design hides many of the complexities of thread creation and management.
+
+* Prefix a function or method call with the go keyword to run the call in a new goroutine. When the call completes, the goroutine exits, silently. (The effect is similar to the Unix shell's & notation for running a command in the background.)
+
+  ``` go
+  go list.Sort()  // run list.Sort concurrently; don't wait for it.
+  ```
+
+* A function literal can be handy in a goroutine invocation.
+
+  ``` go
+  func Announce(message string, delay time.Duration) {
+    go func() {
+      time.Sleep(delay)
+      fmt.Println(message)
+    }()  // Note the parentheses - must call the function.
+  }
+  ```
+
+  In Go, function literals are closures: the implementation makes sure the variables refered to by the function survive as long as they are active.
+
+### Channels
+
+* Like maps, `channels` are allocated with `make`, and the resuling value acts as a reference to an underlying data structure. If an optional integer parameter is provided, it sets the buffer size for the channel. The default is zero, for an unbuffered or synchronous channel.
+
+  ``` go
+  ci := make(chan int)             // unbuffered channel of integers
+  cj := make(chan int, 0)          // unbuffered channel of integers
+  cs := make(chan *os.File, 100)   // buffered channel of pointers to Files
+  ```
+
+* Unbuffered channels combine communication-the exchange of a value-with synchronization-guranteeing that two calculations (goroutines) are in a known stage.
+
+* A channel can allow the launching goroutine to wait for the sort to complete.
+
+  ``` go
+  c := make(chan int)  // Allocate a channel.
+  // Start the sort in a goroutine; when it completes, signal on the channel.
+  go func() {
+    list.Sort()
+    c <- 1  // Send a signal; value does not matter.
+  }()
+  doSomethingForAWhile()
+  <-c  // Wait for sort to finish; discard sent value.
+  ```
+
+* Receivers always block until there is data to receive. If the channel is unbuffered, the sender blocks until the receiver has received the value. If the channel has a buffer, the sender blocks only until the value has been copied to the buffer; if the buffer is full, this means waiting until some receiver has retrieved a value.
+
+* A buffered channel can be used to limit throughput.
+
+  ``` go
+  var sem = make(chan int, MaxOutstanding)
+
+  func handle(r *Request) {
+    <- sem      // Wait for active queue to drain.
+    process(r)  // May take a long time.
+    sem <- 1    // Done; enable next request to run.
+  }
+
+  func init() {
+    for i := 0; i < MaxOutstanding; i++ {
+      sem <- 1
+    }
+  }
+
+  func Serve(queue chan *Request) {
+    for {
+      req := <-queue
+      go handle(req)  // Don't wait for handle to finish.
+    }
+  }
+  ```
+
+  __NOTE__: Because data synchronization occurs on a receive from a channel (that is, the send "happens before" the receive), acquisition of the `sum` must be on a channel _receive_, not _send_.
+
+  This design has a problem, though: `Serve` creates a new goroutine for every incoming request, even though only MaxOutstanding of them can run at any moment. As a result, the program can consume unlimited resources if the requests come in too fast. We can address that deficiency by changing `Serve` to gate the creation of the goroutines.
+
+  Here's an obvious solution, but beware it has a bug we'll fix subsequently:
+
+  ``` go
+  func Server(queue chan *Request) {
+    for req := range queue {
+      <- sem
+      go func() {
+        process(req)  // Buggy; see explanation below.
+        sem <- 1
+      }()
+    }
+  }
+  ```
+
+  The bug is that in a Go for loop, the loop variable is reused for each iteration, so the `req` variable is shared across all goroutines. That's not what we want. We need to make sure that req is unique for each goroutine. Here's one way to do that, passing the value of req as an argument to the closure in the goroutine:
+
+  ``` go
+  func Server(queue chan *Request) {
+    for req := range queue {
+      <- sem
+      go func(req *Request) {
+        process(req)
+        sem <- 1
+      }(req)
+    }
+  }
+  ```
+
+  Another solution is just to create a new variable with the same name, as in this example:
+
+  ``` go
+  func Server(queue chan *Requeset) {
+    for req := range queue {
+      <- sem
+      req := req    // Create new instance of req for the gorouine.
+      go func() {
+        process(req)
+        sem <- 1
+      }()
+    }
+  }
+  ```
+
+  With `req := req`, you get a fresh version of the variable with the same name, deliberately shadowing the loop variable locally but unique to each goroutine.
+
+* Another approach that manages resources well is to start a fixed number of `handle` goroutines all reading from the request channel. The number of goroutines limits the number of simultaneous calls to `process`. This `Server` function also accepts a channel on which it will be told to exit; after launching the goroutines it blocks receiving from the channel.
+
+  ``` go
+  func handle(queue chan *Request) {
+    for r := range queue {
+      process(r)
+    }
+  }
+
+  func Server(clientRequests chan *Request, quit chan bool) {
+    // Start handlers
+    for i := 0; i < MaxOutStanding; i++ {
+      go handle(clientRequests)
+    }
+    <-quit   // Wait to be told to exit.
+  }
+  ```
+
+## Channels of channels
+
+* In the example in the previous section, handle was an idealized handler for a request but we didn't define the type it was handling. If that type includes a channel on which to reply, each client can provide its own path for the answer. Here's a schematic definition of type `Request`.
+
+  ``` go
+  type Request struct {
+    args       []int
+    f          func([]int) int
+    resultChan chan int
+  }
+  ```
+
+  The client provides a function and its arguments, as well as a channel inside the request object on which to receive the answer.
+
+  ``` go
+  func sum(a []int) (s int) {
+    for _, v := range a {
+      s += v
+    }
+    return
+  }
+
+  request := &Request{[]int{3, 4, 5}, sum, make(chan int)}
+  // Send request
+  clientRequests <- request
+  // Wait for response.
+  fmt.Printf("answer: %d\n", <-request.resultChan)
+  ```
+
+  On the server side, the handler function is the only thing that changes.
+
+  ``` go
+  func handle(queue chan *Request) {
+    for req := range queue {
+      req.resultChan <- req.f(req.args)
+    }
+  }
+  ```
+* There's clearly a lot more to do to make it realistic, but this code is a framework for a rate-limited, parallel, non-blocking RPC system, and there's not a mutex in sight.
+
+### Parallelization
+
+* Another approach of these ideas is to parallelize a calculation across multiple CPU cores. If the calculation can be broken into separate pieces that can execute independently, it can be parallelized, with a channel to signal when each piece completes.
+
+* Let's say we have an expensive operation to perform on a vector of items, and that the value of the operation on each item is independent, as in this idealized example.
+
+  ``` go
+  type Vector []float64
+
+  // Apply the operation to v[i], v[i+1] ... up to v[n-1]
+  func (v Vector) DoSome(i, n int, u Vector, c chan int) {
+    for ; i < n; i++ {
+      v[i] += u.Op(v[i])
+    }
+    c <- 1  // Signal that this piece is done
+  }
+  ```
+
+  We launch the pieces independently in a loop, one per CPU. They can complete in any order but it doesn't matter; we just count the completion signals by draining the channel after launching all the goroutines.
+
+  ``` go
+  const NCPU = 4  // number of CPU cores
+
+  func (v Vector) DoAll(u Vector) {
+    c := make(chan int, NCPU)   // Buffering optional but sensible.
+    for i := 0; i < NCPU; i++ {
+      go v.DoSome(i*len(v)/NCPU, (i+1)*len(v)/NCPU, u, c)
+    }
+
+    // Drain the channel.
+    for i := 0; i < NCPU; i++ {
+      <-c  // wait for one task to complete
+    }
+    // All done.
+  }
+  ```
+
+  __The current implementation of the Go runtime will not parallelize this code by default.__ It dedicates only a single core to user-level processing.  An arbitrary number of goroutines can be blocked in system calls, but by default only one can be executing user-level code at any time. It should be smarter and one day it will be smarter, but until it is if you want CPU parallelism you must tell the run-time how many goroutines you want executing code simultaneously.
+
+  There are two related ways to do this. Either run your job with environment variable `GOMAXPROCS` set to the number of cores to use or import the runtime package and call `runtime.GOMAXPROCS(NCPU)`. A helpful value might be `runtime.NumCPU()`, which reports the number of logical CPUs on the local machine. Again, this requirement is expected to be retired as the scheduling and run-time improve.
+
+### A leaky buffer
+
+* The tools of concurrent programming can even make non-concurrent ideas easier to express.
+
+* Here's an example abstracted from an RPC package. The client goroutine loops receiving data from some source, perhaps a network. To avoid allocating and freeing buffers, it keeps a free list, and uses a buffered channel to represent it. If the channel is empty, a new buffer gets allocated. Once the message buffer is ready, it's sent to the server and `serverChan`.
+
+  ``` go
+  var freeList = make(chan *Buffer, 100)
+  var serverChan = make(chan *Buffer)
+
+  func client() {
+    for {
+      var b *Buffer
+      // Grab a buffer if available; allocate if not.
+      select {
+      case b = <-freeList:
+        // Got One; nothing more to do.
+      default:
+        // None free, so allocate a new one.
+        b = new(Buffer)
+      }
+    }
+    load(b)          // Read next message from the net.
+    serverChan <- b  // Send to server.
+  }
+  ```
+
+  The server loop receives each message from the client, processes it, and returns the bfufer to the free list.
+
+  ``` go
+  func server() {
+    for {
+      b := <-serverChan   // Wait for work.
+      process(b)
+      // Reuse buffer if there's room.
+      select {
+      case freeList <- b:
+        // Buffer on free list; nothing more to do.
+      default:
+        // Free list full, just carry on.
+      }
+    }
+  }
+  ```
+
+  This implementation builds a leaky bucket free list in just a few lines, relying on the buffered channel and the garbage collector for bookkeeping.
+
+## Errors
+
+* By convention, errors have type `error`, a simple built-in interface.
+
+  ``` go
+  type error interface {
+    Error() string
+  }
+  ```
+
+* A library writer is free to implement this interface with a richer model under the covers, making it possible not only to see the error but also to provide some context. For example `os.Open` returns an `os.PathError`.
+
+  ``` go
+  // PathError records an error and the operation and
+  // file path that caused it.
+  type PathError struct {
+    Op string     // "open", "unlink", etc.
+    Path string   // The associated file.
+    Err error     // Returned by the system call.
+  }
+
+  func (e *PathError) Error() string {
+    return e.Op + " " + e.Path + ": " + e.Err.Error()
+  }
+  ```
+
+  PathError's Error generates a string like this:
+
+  ```
+  open /etc/passwx: no such file or directory
+  ```
+
+* Callers that care about the precise error details can use a type switch or a type assertion to look for specific errors and extract details. For `PathErrors` this might include examing the internal `Err` field for recoverable failures.
+
+  ``` go
+  for try := 0; try < 2; try++ {
+    file, err = os.Create(filename)
+    if err == nil {
+      return
+    }
+    if e, ok := err.(*os.PathError); ok && e.Err == syscall.ENOSPC {
+      deleteTemFiles()   // Recover some space.
+      continue
+    }
+    return
+  }
+  ```
+
+### Panic
+
+* There is a built-in function `panic` that in effect creates a run-time error that will stop the program (but see the next section). The function takes a single argument of arbitrary type-often a string-to be printed as the program dies. It's also a way to indicate that something impossible has happended, such as exiting an infinite loop.
+
+  ``` go
+  // A toy implementation of cube root using Newton's method.
+  func CubeRoot(x float64) float64 {
+    z := x/3     // Arbitrary initial value
+    for i := 0; i < 1e6; i++ {
+      prevz := z
+      z -= (z*z*z-x) / (3*z*z)
+      if veryClose(z, prevz) {
+        return z
+      }
+    }
+
+    // A million iterations has not converged; something is wrong.
+    panic(fmt.Srpintf("CubeRoot(%g) did not converge", x))
+  }
+  ```
+
+* This is only an example but real library functions should avoid panic. If the problem can be masked or worked around, it's always better to let things continue to run rather than taking down the whole program. One possible counterexample is during initialization: if the library truly cannot set itself up, it might be reasonable to panic, so to speak.
+
+  ``` go
+  var user = os.Getenv("USER")
+
+  func init() {
+    if user == "" {
+      panic("no value for $USER")
+    }
+  }
+  ```
+
+### Recover
+
+* When `panic` is called, including implicitly for run-time errors such as indexing a slice out of bounds or failing a type assertion, it immediately stops execution of the current function and begins unwinding the stack of the goroutine, running any deferred functions along the way. If that unwinding reaches the top of the goroutine's stack, the program dies. However, it is possible to use the built-in function `recover` to regain control of the goroutine and resume normal execution.
+
+* A call to `recover` stops the unwinding and returns the argument passed to panic. Because the only code that runs while unwinding is inside deferred functions, recover is only useful inside deferred functions.
+
+  ``` go
+  func server(workChan <-chan *work) {
+    for work := range workChan {
+      go safelyDo(work)
+    }
+  }
+
+  func safelyDo(work *Work) {
+    defer func() {
+      if err := recover(); err != nil {
+        log.Println("work failed:", err)
+      }
+    }()
+    do(work)
+  }
+  ```
