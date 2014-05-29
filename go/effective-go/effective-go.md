@@ -870,7 +870,7 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
   var sem = make(chan int, MaxOutstanding)
 
   func handle(r *Request) {
-    <- sem      // Wait for active queue to drain.
+    <-sem       // Wait for active queue to drain.
     process(r)  // May take a long time.
     sem <- 1    // Done; enable next request to run.
   }
@@ -889,7 +889,7 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
   }
   ```
 
-  __NOTE__: Because data synchronization occurs on a receive from a channel (that is, the send "happens before" the receive), acquisition of the `sum` must be on a channel _receive_, not _send_.
+  __NOTE__: Because data synchronization occurs on a receive from a channel (that is, the send "happens before" the receive), acquisition of the `sem` must be on a channel _receive_, not _send_.
 
   This design has a problem, though: `Serve` creates a new goroutine for every incoming request, even though only MaxOutstanding of them can run at any moment. As a result, the program can consume unlimited resources if the requests come in too fast. We can address that deficiency by changing `Serve` to gate the creation of the goroutines.
 
@@ -898,7 +898,7 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
   ``` go
   func Server(queue chan *Request) {
     for req := range queue {
-      <- sem
+      <-sem
       go func() {
         process(req)  // Buggy; see explanation below.
         sem <- 1
@@ -912,7 +912,7 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
   ``` go
   func Server(queue chan *Request) {
     for req := range queue {
-      <- sem
+      <-sem
       go func(req *Request) {
         process(req)
         sem <- 1
@@ -926,7 +926,7 @@ if _, err := os.Stat(path); os.IsNotExist(err) {
   ``` go
   func Server(queue chan *Requeset) {
     for req := range queue {
-      <- sem
+      <-sem
       req := req    // Create new instance of req for the gorouine.
       go func() {
         process(req)
